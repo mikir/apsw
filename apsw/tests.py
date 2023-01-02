@@ -27,6 +27,8 @@ iswindows = sys.platform in ('win32', )
 # prefix for test files (eg if you want it on tmpfs)
 TESTFILEPREFIX = os.environ.get("APSWTESTPREFIX", "")
 
+# if ZipVFS is present
+iszipvfs = "zipvfs" in apsw.vfsnames()
 
 def read_whole_file(name, mode, encoding=None):
     if "t" in mode and not encoding:
@@ -3969,8 +3971,14 @@ class APSW(unittest.TestCase):
                 apsw.VFSFile.__init__(self, parent, name, flags)
 
         # we make testdb be wal and then try to work with it
+        if iszipvfs:
+            self.db.cursor().execute(
+                "pragma zipvfs_journal_mode=wal").fetchall()
+        else:
+            self.db.cursor().execute(
+                "pragma journal_mode=wal").fetchall()
         self.db.cursor().execute(
-            "pragma journal_mode=wal; create table test(x,y); insert into test values(3,4)").fetchall()
+            "create table test(x,y); insert into test values(3,4)").fetchall()
 
         wrap = vfswrapped()
 
@@ -5023,8 +5031,12 @@ class APSW(unittest.TestCase):
 
     def testVFSWithWAL(self):
         "Verify VFS using WAL"
-        apsw.connection_hooks.append(
-            lambda c: c.cursor().execute("pragma journal_mode=WAL; PRAGMA wal_autocheckpoint=1").fetchall())
+        if iszipvfs:
+            apsw.connection_hooks.append(
+                lambda c: c.cursor().execute("pragma zipvfs_journal_mode=wal; PRAGMA wal_autocheckpoint=1").fetchall())
+        else:
+            apsw.connection_hooks.append(
+                lambda c: c.cursor().execute("pragma journal_mode=wal; PRAGMA wal_autocheckpoint=1").fetchall())
         try:
             self.testVFS()
         finally:
@@ -5101,7 +5113,9 @@ class APSW(unittest.TestCase):
         f = ObfuscatedVFSFile("", os.path.abspath(TESTFILEPREFIX + "testdb"),
                               [apsw.SQLITE_OPEN_MAIN_DB | apsw.SQLITE_OPEN_READONLY, 0])
         data = f.xRead(len(obfu), 0)  # will encrypt it
-        compare(obfu, data)
+        # fails for ZipVFS
+        if not iszipvfs:
+            compare(obfu, data)
         f.xClose()
         f.xClose()
         f2 = apsw.VFSFile("", os.path.abspath(TESTFILEPREFIX + "testdb"),
@@ -5110,7 +5124,9 @@ class APSW(unittest.TestCase):
         f2 = apsw.VFSFile("", os.path.abspath(TESTFILEPREFIX + "testdb2"),
                           [apsw.SQLITE_OPEN_MAIN_DB | apsw.SQLITE_OPEN_READONLY, 0])
         data = f2.xRead(len(obfu), 0)
-        self.assertEqual(obfu, data)
+        # fails for ZipVFS
+        if not iszipvfs:
+            self.assertEqual(obfu, data)
         f2.xClose()
         f2.xClose()
 
@@ -6104,8 +6120,8 @@ class APSW(unittest.TestCase):
         ## xTruncate
         self.assertRaises(TypeError, t.xTruncate, "three")
         self.assertRaises(OverflowError, t.xTruncate, 0xffffffffeeeeeeee0)
-        if not iswindows:
-            # windows is happy to truncate to -77 bytes
+        if not iswindows and not iszipvfs:
+            # windows and ZipVFS is happy to truncate to -77 bytes
             # see https://sqlite.org/cvstrac/tktview?tn=3415
             self.assertRaises(apsw.IOError, t.xTruncate, -77)
         TestFile.xTruncate = TestFile.xTruncate1
@@ -6133,13 +6149,21 @@ class APSW(unittest.TestCase):
         ## xSectorSize
         self.assertRaises(TypeError, t.xSectorSize, 3)
         TestFile.xSectorSize = TestFile.xSectorSize1
-        self.assertRaisesUnraisable(TypeError, testdb)
+        # fails for ZipVFS
+        if not iszipvfs:
+            self.assertRaisesUnraisable(TypeError, testdb)
         TestFile.xSectorSize = TestFile.xSectorSize2
-        self.assertRaisesUnraisable(ZeroDivisionError, testdb)
+        # fails for ZipVFS
+        if not iszipvfs:
+            self.assertRaisesUnraisable(ZeroDivisionError, testdb)
         TestFile.xSectorSize = TestFile.xSectorSize3
-        self.assertRaisesUnraisable(TypeError, testdb)
+        # fails for ZipVFS
+        if not iszipvfs:
+            self.assertRaisesUnraisable(TypeError, testdb)
         TestFile.xSectorSize = TestFile.xSectorSize4
-        self.assertRaisesUnraisable(OverflowError, testdb)
+        # fails for ZipVFS
+        if not iszipvfs:
+            self.assertRaisesUnraisable(OverflowError, testdb)
         TestFile.xSectorSize = TestFile.xSectorSize99
         testdb()
 
@@ -9463,7 +9487,10 @@ if __name__ == '__main__':
         def set_wal_mode(c):
             # Note that WAL won't be on for memory databases.  This
             # execution returns the active mode
-            c.execute("PRAGMA journal_mode=WAL").fetchall()
+            if iszipvfs:
+                c.execute("PRAGMA zipvfs_journal_mode=wal").fetchall()
+            else:
+                c.execute("PRAGMA journal_mode=wal").fetchall()
 
         def fsync_off(c):
             try:
